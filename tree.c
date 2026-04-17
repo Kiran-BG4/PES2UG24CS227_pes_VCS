@@ -15,12 +15,111 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#include "index.h"
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
 
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
 #define MODE_FILE      0100644
 #define MODE_EXEC      0100755
 #define MODE_DIR       0040000
+
+typedef struct TreeNode TreeNode;
+typedef struct {
+    char name[256];
+    uint32_t mode;
+    ObjectID hash;
+} FileItem;
+
+struct TreeNode {
+    char name[256];
+    FileItem *files;
+    int file_count;
+    int file_cap;
+    TreeNode **children;
+    int child_count;
+    int child_cap;
+};
+
+static TreeNode *new_node(const char *name) {
+    TreeNode *n = calloc(1, sizeof(TreeNode));
+    if (!n) return NULL;
+    if (name) snprintf(n->name, sizeof(n->name), "%s", name);
+    return n;
+}
+
+static TreeNode *find_child(TreeNode *parent, const char *name) {
+    for (int i = 0; i < parent->child_count; i++) {
+        if (strcmp(parent->children[i]->name, name) == 0) return parent->children[i];
+    }
+    return NULL;
+}
+
+static int add_child(TreeNode *parent, TreeNode *child) {
+    if (parent->child_count == parent->child_cap) {
+        int next_cap = parent->child_cap == 0 ? 4 : parent->child_cap * 2;
+        TreeNode **next = realloc(parent->children, (size_t)next_cap * sizeof(TreeNode *));
+        if (!next) return -1;
+        parent->children = next;
+        parent->child_cap = next_cap;
+    }
+    parent->children[parent->child_count++] = child;
+    return 0;
+}
+
+static int add_file(TreeNode *node, const char *name, uint32_t mode, const ObjectID *hash) {
+    if (strlen(name) >= sizeof(node->files[0].name)) return -1;
+    if (node->file_count == node->file_cap) {
+        int next_cap = node->file_cap == 0 ? 8 : node->file_cap * 2;
+        FileItem *next = realloc(node->files, (size_t)next_cap * sizeof(FileItem));
+        if (!next) return -1;
+        node->files = next;
+        node->file_cap = next_cap;
+    }
+    FileItem *it = &node->files[node->file_count++];
+    snprintf(it->name, sizeof(it->name), "%s", name);
+    it->mode = mode;
+    it->hash = *hash;
+    return 0;
+}
+
+static void free_tree(TreeNode *node) {
+    if (!node) return;
+    for (int i = 0; i < node->child_count; i++) free_tree(node->children[i]);
+    free(node->children);
+    free(node->files);
+    free(node);
+}
+
+static int write_node(TreeNode *node, ObjectID *out) {
+    Tree tree = {0};
+
+    for (int i = 0; i < node->file_count; i++) {
+        if (tree.count >= MAX_TREE_ENTRIES) return -1;
+        TreeEntry *e = &tree.entries[tree.count++];
+        e->mode = node->files[i].mode;
+        e->hash = node->files[i].hash;
+        snprintf(e->name, sizeof(e->name), "%s", node->files[i].name);
+    }
+
+    for (int i = 0; i < node->child_count; i++) {
+        ObjectID child_id;
+        if (write_node(node->children[i], &child_id) != 0) return -1;
+        if (tree.count >= MAX_TREE_ENTRIES) return -1;
+        TreeEntry *e = &tree.entries[tree.count++];
+        e->mode = MODE_DIR;
+        e->hash = child_id;
+        snprintf(e->name, sizeof(e->name), "%s", node->children[i]->name);
+    }
+
+    void *serialized = NULL;
+    size_t serialized_len = 0;
+    if (tree_serialize(&tree, &serialized, &serialized_len) != 0) return -1;
+    int rc = object_write(OBJ_TREE, serialized, serialized_len, out);
+    free(serialized);
+    return rc;
+}
 
 // ─── PROVIDED ───────────────────────────────────────────────────────────────
 
@@ -130,8 +229,77 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //
 // Returns 0 on success, -1 on error.
 int tree_from_index(ObjectID *id_out) {
-    // TODO: Implement recursive tree building
-    // (See Lab Appendix for logical steps)
-    (void)id_out;
-    return -1;
+    Index index = {0};
+    FILE *f = fopen(INDEX_FILE, "r");
+    if (f) {
+        char mode_str[16];
+        char hex[HASH_HEX_SIZE + 1];
+        unsigned long long mtime = 0;
+        unsigned int size = 0;
+        char path[512];
+        while (fscanf(f, "%15s %64s %llu %u %511[^\n]\n",
+                      mode_str, hex, &mtime, &size, path) == 5) {
+            if (index.count >= MAX_INDEX_ENTRIES) {
+                fclose(f);
+                return -1;
+            }
+            IndexEntry *e = &index.entries[index.count++];
+            e->mode = (uint32_t)strtoul(mode_str, NULL, 8);
+            if (hex_to_hash(hex, &e->hash) != 0) {
+                fclose(f);
+                return -1;
+            }
+            e->mtime_sec = (uint64_t)mtime;
+            e->size = size;
+            snprintf(e->path, sizeof(e->path), "%s", path);
+        }
+        if (!feof(f)) {
+            fclose(f);
+            return -1;
+        }
+        fclose(f);
+    } else if (access(INDEX_FILE, F_OK) == 0) {
+        return -1;
+    }
+
+    TreeNode *root = new_node("");
+    if (!root) return -1;
+
+    for (int i = 0; i < index.count; i++) {
+        const IndexEntry *ie = &index.entries[i];
+        char path_buf[512];
+        snprintf(path_buf, sizeof(path_buf), "%s", ie->path);
+
+        TreeNode *cur = root;
+        char *segment = path_buf;
+        char *slash = strchr(segment, '/');
+
+        while (slash) {
+            *slash = '\0';
+            if (segment[0] == '\0') {
+                free_tree(root);
+                return -1;
+            }
+            TreeNode *child = find_child(cur, segment);
+            if (!child) {
+                child = new_node(segment);
+                if (!child || add_child(cur, child) != 0) {
+                    free_tree(root);
+                    return -1;
+                }
+            }
+            cur = child;
+            segment = slash + 1;
+            slash = strchr(segment, '/');
+        }
+
+        if (segment[0] == '\0' || add_file(cur, segment, ie->mode, &ie->hash) != 0) {
+            free_tree(root);
+            return -1;
+        }
+    }
+
+    int rc = write_node(root, id_out);
+    free_tree(root);
+    return rc;
 }
