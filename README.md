@@ -543,57 +543,8 @@ The following questions cover filesystem concepts beyond the implementation scop
 
 ---
 
-## Submission Checklist
-
-### Screenshots Required
-
-| Phase | ID  | What to Capture                                                 |
-| ----- | --- | --------------------------------------------------------------- |
-| 1     | 1A  | `./test_objects` output showing all tests passing               |
-| 1     | 1B  | `find .pes/objects -type f` showing sharded directory structure |
-| 2     | 2A  | `./test_tree` output showing all tests passing                  |
-| 2     | 2B  | `xxd` of a raw tree object (first 20 lines)                    |
-| 3     | 3A  | `pes init` → `pes add` → `pes status` sequence                 |
-| 3     | 3B  | `cat .pes/index` showing the text-format index                  |
-| 4     | 4A  | `pes log` output with three commits                            |
-| 4     | 4B  | `find .pes -type f \| sort` showing object growth              |
-| 4     | 4C  | `cat .pes/refs/heads/main` and `cat .pes/HEAD`                 |
-| Final | --  | Full integration test (`make test-integration`)                 |
-
-### Code Files Required (5 files)
-
-| File           | Description                              |
-| -------------- | ---------------------------------------- |
-| `object.c`     | Object store implementation              |
-| `tree.c`       | Tree serialization and construction      |
-| `index.c`      | Staging area implementation              |
-| `commit.c`     | Commit creation and history walking      |
-
-### Analysis Questions (written answers)
-
-| Section                   | Questions        |
-| ------------------------- | ---------------- |
-| Branching (analysis-only) | Q5.1, Q5.2, Q5.3 |
-| GC (analysis-only)        | Q6.1, Q6.2       |
-
 -----------
 
-## Submission Requirements
-
-**1. GitHub Repository**
-* You must submit the link to your GitHub repository via the official submission link (which will be shared by your respective faculty).
-* The repository must strictly maintain the directory structure you built throughout this lab.
-* Ensure your github repository is made `public`
-
-**2. Lab Report**
-* Your report, containing all required **screenshots** and answers to the **analysis questions**, must be placed at the **root** of your repository directory.
-* The report must be submitted as either a PDF (`report.pdf`) or a Markdown file (`README.md`).
-
-**3. Commit History (Graded Requirement)**
-* **Minimum Requirement:** You must have a minimum of **5 commits per phase** with appropriate commit messages. Submitting fewer than 5 commits for any given phase will result in a deduction of marks.
-* **Best Practices:** We highly prefer more than 5 detailed commits per phase. Granular commits that clearly show the delta in code block changes allow us to verify your step-by-step understanding of the concepts and prevent penalties <3
-
----
 
 ## Further Reading
 
